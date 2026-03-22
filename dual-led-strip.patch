@@ -1,0 +1,472 @@
+diff --git a/src/main/drivers/light_ws2811strip.c b/src/main/drivers/light_ws2811strip.c
+index fe5f405d0..b25a43c47 100644
+--- a/src/main/drivers/light_ws2811strip.c
++++ b/src/main/drivers/light_ws2811strip.c
+@@ -51,39 +51,39 @@
+ #define WS2811_BIT_COMPARE_1 ((WS2811_PERIOD * 2) / 3)
+ #define WS2811_BIT_COMPARE_0 (WS2811_PERIOD / 3)
+ 
+-PG_REGISTER_WITH_RESET_TEMPLATE(ledPinConfig_t, ledPinConfig, PG_LEDPIN_CONFIG, 0);
++PG_REGISTER_WITH_RESET_TEMPLATE(ledPinConfig_t, ledPinConfig, PG_LEDPIN_CONFIG, 1);
+ 
+ PG_RESET_TEMPLATE(ledPinConfig_t, ledPinConfig,
+     .led_pin_pwm_mode = SETTING_LED_PIN_PWM_MODE_DEFAULT
+ );
+ 
+-static DMA_RAM timerDMASafeType_t ledStripDMABuffer[WS2811_DMA_BUFFER_SIZE];
++static DMA_RAM timerDMASafeType_t ledStripDMABuffer[LED_STRIP_COUNT][WS2811_DMA_BUFFER_SIZE];
+ 
+-static IO_t ws2811IO = IO_NONE;
+-static TCH_t * ws2811TCH = NULL;
+-static bool ws2811Initialised = false;
+-static bool pwmMode = false;
++static IO_t ws2811IO[LED_STRIP_COUNT] = { IO_NONE };
++static TCH_t * ws2811TCH[LED_STRIP_COUNT] = { NULL };
++static bool ws2811Initialised[LED_STRIP_COUNT] = { false };
++static bool pwmMode[LED_STRIP_COUNT] = { false };
+ 
+-static hsvColor_t ledColorBuffer[WS2811_LED_STRIP_LENGTH];
++static hsvColor_t ledColorBuffer[LED_STRIP_COUNT][WS2811_LED_STRIP_LENGTH];
+ 
+ void setLedHsv(uint16_t index, const hsvColor_t *color)
+ {
+-    ledColorBuffer[index] = *color;
++    ledColorBuffer[0][index] = *color;
+ }
+ 
+ void getLedHsv(uint16_t index, hsvColor_t *color)
+ {
+-    *color = ledColorBuffer[index];
++    *color = ledColorBuffer[0][index];
+ }
+ 
+ void setLedValue(uint16_t index, const uint8_t value)
+ {
+-    ledColorBuffer[index].v = value;
++    ledColorBuffer[0][index].v = value;
+ }
+ 
+ void scaleLedValue(uint16_t index, const uint8_t scalePercent)
+ {
+-    ledColorBuffer[index].v = ((uint16_t)ledColorBuffer[index].v * scalePercent / 100);
++    ledColorBuffer[0][index].v = ((uint16_t)ledColorBuffer[0][index].v * scalePercent / 100);
+ }
+ 
+ void setStripColor(const hsvColor_t *color)
+@@ -102,152 +102,200 @@ void setStripColors(const hsvColor_t *colors)
+     }
+ }
+ 
+-bool ledConfigureDMA(void) {
+-    /* Compute the prescaler value */
++#ifdef USE_LED_STRIP_2
++void setLedHsvIdx(uint8_t stripIdx, uint16_t index, const hsvColor_t *color)
++{
++    ledColorBuffer[stripIdx][index] = *color;
++}
++
++void getLedHsvIdx(uint8_t stripIdx, uint16_t index, hsvColor_t *color)
++{
++    *color = ledColorBuffer[stripIdx][index];
++}
++
++void setLedValueIdx(uint8_t stripIdx, uint16_t index, const uint8_t value)
++{
++    ledColorBuffer[stripIdx][index].v = value;
++}
++
++void scaleLedValueIdx(uint8_t stripIdx, uint16_t index, const uint8_t scalePercent)
++{
++    ledColorBuffer[stripIdx][index].v = ((uint16_t)ledColorBuffer[stripIdx][index].v * scalePercent / 100);
++}
++#endif
++
++static bool ledConfigureDMAIdx(uint8_t stripIdx) {
+     uint8_t period = WS2811_TIMER_HZ / WS2811_CARRIER_HZ;
+ 
+-    timerConfigBase(ws2811TCH, period, WS2811_TIMER_HZ);
+-    timerPWMConfigChannel(ws2811TCH, 0);
++    timerConfigBase(ws2811TCH[stripIdx], period, WS2811_TIMER_HZ);
++    timerPWMConfigChannel(ws2811TCH[stripIdx], 0);
+ 
+-    return timerPWMConfigChannelDMA(ws2811TCH, ledStripDMABuffer, sizeof(ledStripDMABuffer[0]), WS2811_DMA_BUFFER_SIZE);
++    return timerPWMConfigChannelDMA(ws2811TCH[stripIdx], ledStripDMABuffer[stripIdx], sizeof(ledStripDMABuffer[0][0]), WS2811_DMA_BUFFER_SIZE);
+ }
+ 
+-void ledConfigurePWM(void) {
+-        timerConfigBase(ws2811TCH, 100, WS2811_TIMER_HZ );
+-        timerPWMConfigChannel(ws2811TCH, 0);
+-        timerPWMStart(ws2811TCH);
+-        timerEnable(ws2811TCH);
+-        pwmMode = true;
++static void ledConfigurePWMIdx(uint8_t stripIdx) {
++    timerConfigBase(ws2811TCH[stripIdx], 100, WS2811_TIMER_HZ);
++    timerPWMConfigChannel(ws2811TCH[stripIdx], 0);
++    timerPWMStart(ws2811TCH[stripIdx]);
++    timerEnable(ws2811TCH[stripIdx]);
++    pwmMode[stripIdx] = true;
+ }
+ 
+-void ws2811LedStripInit(void)
++static void ws2811LedStripInitByIndex(uint8_t stripIdx, ioTag_t pinTag)
+ {
+-    const timerHardware_t * timHw = timerGetByTag(IO_TAG(WS2811_PIN), TIM_USE_ANY);
+-
+-    if (!(timHw->usageFlags & TIM_USE_LED)) { // Check if it has not been reassigned
+-        timHw = timerGetByUsageFlag(TIM_USE_LED); // Get first pin marked as LED
+-    }
++    const timerHardware_t * timHw = timerGetByTag(pinTag, TIM_USE_ANY);
+ 
+     if (timHw == NULL) {
+         return;
+     }
+ 
+-    ws2811TCH = timerGetTCH(timHw);
+-    if (ws2811TCH == NULL) {
++    if (stripIdx == 0 && !(timHw->usageFlags & TIM_USE_LED)) {
++        timHw = timerGetByUsageFlag(TIM_USE_LED);
++        if (timHw == NULL) {
++            return;
++        }
++    }
++
++    ws2811TCH[stripIdx] = timerGetTCH(timHw);
++    if (ws2811TCH[stripIdx] == NULL) {
+         return;
+     }
+ 
+-    ws2811IO = IOGetByTag(timHw->tag); //IOGetByTag(IO_TAG(WS2811_PIN));
+-    IOInit(ws2811IO, OWNER_LED_STRIP, RESOURCE_OUTPUT, 0);
+-    IOConfigGPIOAF(ws2811IO, IOCFG_AF_PP_FAST, timHw->alternateFunction);
++    ws2811IO[stripIdx] = IOGetByTag(timHw->tag);
++    IOInit(ws2811IO[stripIdx], OWNER_LED_STRIP, RESOURCE_OUTPUT, stripIdx);
++    IOConfigGPIOAF(ws2811IO[stripIdx], IOCFG_AF_PP_FAST, timHw->alternateFunction);
+ 
+-    if (ledPinConfig()->led_pin_pwm_mode == LED_PIN_PWM_MODE_LOW) {
+-        ledConfigurePWM();
+-        *timerCCR(ws2811TCH) = 0;
+-    } else if (ledPinConfig()->led_pin_pwm_mode == LED_PIN_PWM_MODE_HIGH) {
+-        ledConfigurePWM();
+-        *timerCCR(ws2811TCH) = 100;
++    if (stripIdx == 0 && ledPinConfig()->led_pin_pwm_mode == LED_PIN_PWM_MODE_LOW) {
++        ledConfigurePWMIdx(stripIdx);
++        *timerCCR(ws2811TCH[stripIdx]) = 0;
++    } else if (stripIdx == 0 && ledPinConfig()->led_pin_pwm_mode == LED_PIN_PWM_MODE_HIGH) {
++        ledConfigurePWMIdx(stripIdx);
++        *timerCCR(ws2811TCH[stripIdx]) = 100;
+     } else {
+-        if (!ledConfigureDMA()) {
+-            // If DMA failed - abort
+-            ws2811Initialised = false;
++        if (!ledConfigureDMAIdx(stripIdx)) {
++            ws2811Initialised[stripIdx] = false;
+             return;
+         }
+ 
+-        // Zero out DMA buffer
+-        memset(&ledStripDMABuffer, 0, sizeof(ledStripDMABuffer));
+-        if ( ledPinConfig()->led_pin_pwm_mode == LED_PIN_PWM_MODE_SHARED_HIGH ) {
+-           ledStripDMABuffer[WS2811_DMA_BUFFER_SIZE-1] = 255;
++        memset(ledStripDMABuffer[stripIdx], 0, sizeof(ledStripDMABuffer[stripIdx]));
++        if (stripIdx == 0 && ledPinConfig()->led_pin_pwm_mode == LED_PIN_PWM_MODE_SHARED_HIGH) {
++           ledStripDMABuffer[stripIdx][WS2811_DMA_BUFFER_SIZE-1] = 255;
+         }
+-        ws2811Initialised = true;
+-
+-        ws2811UpdateStrip();
++        ws2811Initialised[stripIdx] = true;
+     }
+ }
+ 
++void ws2811LedStripInit(void)
++{
++    ws2811LedStripInitByIndex(0, IO_TAG(WS2811_PIN));
++#ifdef USE_LED_STRIP_2
++    ws2811LedStripInitByIndex(1, IO_TAG(WS2811_PIN_2));
++#endif
++}
++
+ bool isWS2811LedStripReady(void)
+ {
+-    return !timerPWMDMAInProgress(ws2811TCH);
++    return !timerPWMDMAInProgress(ws2811TCH[0]);
+ }
+ 
++#ifdef USE_LED_STRIP_2
++bool isWS2811LedStripReadyIdx(uint8_t stripIdx)
++{
++    return !timerPWMDMAInProgress(ws2811TCH[stripIdx]);
++}
++#endif
++
+ STATIC_UNIT_TESTED uint16_t dmaBufferOffset;
+ static int16_t ledIndex;
+ 
+-STATIC_UNIT_TESTED void fastUpdateLEDDMABuffer(rgbColor24bpp_t *color)
++static void fastUpdateLEDDMABufferIdx(uint8_t stripIdx, rgbColor24bpp_t *color)
+ {
+     uint32_t grb = (color->rgb.g << 16) | (color->rgb.r << 8) | (color->rgb.b);
+ 
+     for (int8_t index = 23; index >= 0; index--) {
+-        ledStripDMABuffer[WS2811_DELAY_BUFFER_LENGTH + dmaBufferOffset++] = (grb & (1 << index)) ? WS2811_BIT_COMPARE_1 : WS2811_BIT_COMPARE_0;
++        ledStripDMABuffer[stripIdx][WS2811_DELAY_BUFFER_LENGTH + dmaBufferOffset++] = (grb & (1 << index)) ? WS2811_BIT_COMPARE_1 : WS2811_BIT_COMPARE_0;
+     }
+ }
+ 
+-/*
+- * This method is non-blocking unless an existing LED update is in progress.
+- * it does not wait until all the LEDs have been updated, that happens in the background.
+- */
+-void ws2811UpdateStrip(void)
++STATIC_UNIT_TESTED void fastUpdateLEDDMABuffer(rgbColor24bpp_t *color)
++{
++    fastUpdateLEDDMABufferIdx(0, color);
++}
++
++static void ws2811UpdateStripInternal(uint8_t stripIdx)
+ {
+     static rgbColor24bpp_t *rgb24;
+ 
+-    // don't wait - risk of infinite block, just get an update next time round
+-    if (pwmMode || timerPWMDMAInProgress(ws2811TCH)) {
++    if (pwmMode[stripIdx] || timerPWMDMAInProgress(ws2811TCH[stripIdx])) {
+         return;
+     }
+ 
+-    dmaBufferOffset = 0;                // reset buffer memory index
+-    ledIndex = 0;                       // reset led index
++    dmaBufferOffset = 0;
++    ledIndex = 0;
+ 
+-    // fill transmit buffer with correct compare values to achieve
+-    // correct pulse widths according to color values
+     while (ledIndex < WS2811_LED_STRIP_LENGTH)
+     {
+-        rgb24 = hsvToRgb24(&ledColorBuffer[ledIndex]);
+-        fastUpdateLEDDMABuffer(rgb24);
++        rgb24 = hsvToRgb24(&ledColorBuffer[stripIdx][ledIndex]);
++        fastUpdateLEDDMABufferIdx(stripIdx, rgb24);
+         ledIndex++;
+     }
+ 
+-    // Initiate hardware transfer
+-    if (!ws2811Initialised || !ws2811TCH) {
++    if (!ws2811Initialised[stripIdx] || !ws2811TCH[stripIdx]) {
+         return;
+     }
+ 
+-    timerPWMPrepareDMA(ws2811TCH, WS2811_DMA_BUFFER_SIZE);
+-    timerPWMStartDMA(ws2811TCH);
++    timerPWMPrepareDMA(ws2811TCH[stripIdx], WS2811_DMA_BUFFER_SIZE);
++    timerPWMStartDMA(ws2811TCH[stripIdx]);
+ }
+ 
++/*
++ * This method is non-blocking unless an existing LED update is in progress.
++ * it does not wait until all the LEDs have been updated, that happens in the background.
++ */
++void ws2811UpdateStrip(void)
++{
++    ws2811UpdateStripInternal(0);
++}
++
++#ifdef USE_LED_STRIP_2
++void ws2811UpdateStripIdx(uint8_t stripIdx)
++{
++    ws2811UpdateStripInternal(stripIdx);
++}
++#endif
++
+ //value
+ void ledPinStartPWM(uint16_t value) {
+-    if (ws2811TCH == NULL) {
++    if (ws2811TCH[0] == NULL) {
+         return;
+     }
+ 
+-	if ( !pwmMode ) {
+-	    timerPWMStopDMA(ws2811TCH);
++	if ( !pwmMode[0] ) {
++	    timerPWMStopDMA(ws2811TCH[0]);
+         //FIXME: implement method to release DMA
+-        ws2811TCH->dma->owner = OWNER_FREE;
++        ws2811TCH[0]->dma->owner = OWNER_FREE;
+ 
+-        ledConfigurePWM();
++        ledConfigurePWMIdx(0);
+     }
+-	*timerCCR(ws2811TCH) = value;
++	*timerCCR(ws2811TCH[0]) = value;
+ }
+ 
+ void ledPinStopPWM(void) {
+-    if (ws2811TCH == NULL || !pwmMode ) {
++    if (ws2811TCH[0] == NULL || !pwmMode[0] ) {
+         return;
+     }
+ 
+     if ( ledPinConfig()->led_pin_pwm_mode == LED_PIN_PWM_MODE_HIGH ) {
+-		*timerCCR(ws2811TCH) = 100;
++		*timerCCR(ws2811TCH[0]) = 100;
+         return;
+     } else if ( ledPinConfig()->led_pin_pwm_mode == LED_PIN_PWM_MODE_LOW ) {
+-		*timerCCR(ws2811TCH) = 0;
++		*timerCCR(ws2811TCH[0]) = 0;
+         return;
+-    } 
+-    pwmMode = false;
++    }
++    pwmMode[0] = false;
+ 
+-    if (!ledConfigureDMA()) {
+-        ws2811Initialised = false;
++    if (!ledConfigureDMAIdx(0)) {
++        ws2811Initialised[0] = false;
+     }
+ }
+ 
+diff --git a/src/main/drivers/light_ws2811strip.h b/src/main/drivers/light_ws2811strip.h
+index 94c36445e..ff95f502a 100644
+--- a/src/main/drivers/light_ws2811strip.h
++++ b/src/main/drivers/light_ws2811strip.h
+@@ -21,7 +21,7 @@
+ 
+ #define WS2811_LED_STRIP_LENGTH 128
+ #define WS2811_BITS_PER_LED 24
+-#define WS2811_DELAY_BUFFER_LENGTH 42 // for 50us delay 
++#define WS2811_DELAY_BUFFER_LENGTH 42 // for 50us delay
+ 
+ #define WS2811_DATA_BUFFER_SIZE (WS2811_BITS_PER_LED * WS2811_LED_STRIP_LENGTH)
+ 
+@@ -30,6 +30,12 @@
+ #define WS2811_TIMER_HZ         2400000
+ #define WS2811_CARRIER_HZ       800000
+ 
++#ifdef USE_LED_STRIP_2
++#define LED_STRIP_COUNT 2
++#else
++#define LED_STRIP_COUNT 1
++#endif
++
+ typedef enum {
+     LED_PIN_PWM_MODE_SHARED_LOW = 0,
+     LED_PIN_PWM_MODE_SHARED_HIGH = 1,
+@@ -39,6 +45,9 @@ typedef enum {
+ 
+ typedef struct ledPinConfig_s {
+     uint8_t led_pin_pwm_mode;  //led_pin_pwm_mode_e
++#ifdef USE_LED_STRIP_2
++    uint8_t led_strip_2_offset;
++#endif
+ } ledPinConfig_t;
+ 
+ PG_DECLARE(ledPinConfig_t, ledPinConfig);
+@@ -64,3 +73,12 @@ void setStripColor(const hsvColor_t *color);
+ void setStripColors(const hsvColor_t *colors);
+ 
+ bool isWS2811LedStripReady(void);
++
++#ifdef USE_LED_STRIP_2
++void ws2811UpdateStripIdx(uint8_t stripIdx);
++bool isWS2811LedStripReadyIdx(uint8_t stripIdx);
++void setLedHsvIdx(uint8_t stripIdx, uint16_t index, const hsvColor_t *color);
++void getLedHsvIdx(uint8_t stripIdx, uint16_t index, hsvColor_t *color);
++void scaleLedValueIdx(uint8_t stripIdx, uint16_t index, const uint8_t scalePercent);
++void setLedValueIdx(uint8_t stripIdx, uint16_t index, const uint8_t value);
++#endif
+diff --git a/src/main/fc/settings.yaml b/src/main/fc/settings.yaml
+index 476dfe09f..1949d9b6d 100644
+--- a/src/main/fc/settings.yaml
++++ b/src/main/fc/settings.yaml
+@@ -4275,6 +4275,13 @@ groups:
+         default_value: "SHARED_LOW"
+         field: led_pin_pwm_mode
+         table: led_pin_pwm_mode
++      - name: led_strip_2_offset
++        condition: USE_LED_STRIP_2
++        description: "LED index where second strip begins (0=second strip disabled)"
++        default_value: 0
++        field: led_strip_2_offset
++        min: 0
++        max: 127
+ 
+   - name: PG_OSD_JOYSTICK_CONFIG
+     type: osdJoystickConfig_t
+diff --git a/src/main/io/ledstrip.c b/src/main/io/ledstrip.c
+index 8e8e57714..058bd35b6 100644
+--- a/src/main/io/ledstrip.c
++++ b/src/main/io/ledstrip.c
+@@ -990,6 +990,20 @@ void ledStripUpdate(timeUs_t currentTimeUs)
+         (*layerTable[timId])(updateNow, timer);
+     }
+     ws2811UpdateStrip();
++
++#ifdef USE_LED_STRIP_2
++    {
++        const uint8_t offset = ledPinConfig()->led_strip_2_offset;
++        if (offset > 0 && offset < WS2811_LED_STRIP_LENGTH) {
++            for (uint16_t i = offset; i < WS2811_LED_STRIP_LENGTH; i++) {
++                hsvColor_t c;
++                getLedHsv(i, &c);
++                setLedHsvIdx(1, i - offset, &c);
++            }
++            ws2811UpdateStripIdx(1);
++        }
++    }
++#endif
+ }
+ 
+ bool parseColor(int index, const char *colorConfig)
+@@ -1078,5 +1092,14 @@ static void ledStripDisable(void)
+     setStripColor(&HSV(BLACK));
+ 
+     ws2811UpdateStrip();
++#ifdef USE_LED_STRIP_2
++    {
++        const hsvColor_t black = HSV(BLACK);
++        for (uint16_t i = 0; i < WS2811_LED_STRIP_LENGTH; i++) {
++            setLedHsvIdx(1, i, &black);
++        }
++        ws2811UpdateStripIdx(1);
++    }
++#endif
+ }
+ #endif
+diff --git a/src/main/target/COREWINGF405WINGV2/target.c b/src/main/target/COREWINGF405WINGV2/target.c
+index a64e03b22..2b13b0e56 100644
+--- a/src/main/target/COREWINGF405WINGV2/target.c
++++ b/src/main/target/COREWINGF405WINGV2/target.c
+@@ -39,9 +39,8 @@ timerHardware_t timerHardware[] = {
+     DEF_TIM(TIM2,   CH1, PA15, TIM_USE_OUTPUT_AUTO,   1, 0), // S8
+     DEF_TIM(TIM2,   CH3, PB10, TIM_USE_OUTPUT_AUTO,   1, 0), // S9
+     DEF_TIM(TIM2,   CH4, PB11, TIM_USE_OUTPUT_AUTO,   1, 0), // S10
+-    DEF_TIM(TIM12,  CH2, PB15, TIM_USE_OUTPUT_AUTO,   1, 0), // S11 
+-
+-    DEF_TIM(TIM1,   CH1, PA8,  TIM_USE_LED,   0, 0), //2812LED  D(1,5,3)
++    DEF_TIM(TIM1,   CH1, PA8,  TIM_USE_LED,   0, 1), //2812LED1  D(2,1,6)
++    DEF_TIM(TIM1,  CH3N, PB15, TIM_USE_LED,   TIMER_OUTPUT_INVERTED, 1), //2812LED2  D(2,6,6)
+     DEF_TIM(TIM5,   CH3, PA2,  TIM_USE_ANY,   0, 0), //TX2  softserial1_Tx
+ };
+ 
+diff --git a/src/main/target/COREWINGF405WINGV2/target.h b/src/main/target/COREWINGF405WINGV2/target.h
+index 2176728d8..e6962ae54 100644
+--- a/src/main/target/COREWINGF405WINGV2/target.h
++++ b/src/main/target/COREWINGF405WINGV2/target.h
+@@ -153,6 +153,8 @@
+ // *************** LED2812 ************************
+ #define USE_LED_STRIP
+ #define WS2811_PIN                      PA8
++#define USE_LED_STRIP_2
++#define WS2811_PIN_2                    PB15
+ 
+ // ***************  OTHERS *************************
+ #define DEFAULT_FEATURES        (FEATURE_TX_PROF_SEL | FEATURE_OSD | FEATURE_CURRENT_METER | FEATURE_VBAT | FEATURE_TELEMETRY | FEATURE_BLACKBOX | FEATURE_AIRMODE)
+@@ -167,7 +169,7 @@
+ #define TARGET_IO_PORTC         0xffff
+ #define TARGET_IO_PORTD         (BIT(2))
+ 
+-#define MAX_PWM_OUTPUT_PORTS       11
++#define MAX_PWM_OUTPUT_PORTS       10
+ 
+ #define USE_PINIO
+ #define USE_PINIOBOX
