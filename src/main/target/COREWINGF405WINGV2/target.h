@@ -153,6 +153,8 @@
 // *************** LED2812 ************************
 #define USE_LED_STRIP
 #define WS2811_PIN                      PA8
+#define USE_LED_STRIP_2
+#define WS2811_PIN_2                    PB15
 
 // ***************  OTHERS *************************
 #define DEFAULT_FEATURES        (FEATURE_TX_PROF_SEL | FEATURE_OSD | FEATURE_CURRENT_METER | FEATURE_VBAT | FEATURE_TELEMETRY | FEATURE_BLACKBOX | FEATURE_AIRMODE)
@@ -167,7 +169,7 @@
 #define TARGET_IO_PORTC         0xffff
 #define TARGET_IO_PORTD         (BIT(2))
 
-#define MAX_PWM_OUTPUT_PORTS       11
+#define MAX_PWM_OUTPUT_PORTS       10
 
 #define USE_PINIO
 #define USE_PINIOBOX

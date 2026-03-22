@@ -4275,6 +4275,13 @@ groups:
         default_value: "SHARED_LOW"
         field: led_pin_pwm_mode
         table: led_pin_pwm_mode
+      - name: led_strip_2_offset
+        condition: USE_LED_STRIP_2
+        description: "LED index where second strip begins (0=second strip disabled)"
+        default_value: 0
+        field: led_strip_2_offset
+        min: 0
+        max: 127
 
   - name: PG_OSD_JOYSTICK_CONFIG
     type: osdJoystickConfig_t

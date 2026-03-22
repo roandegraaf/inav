@@ -21,7 +21,7 @@
 
 #define WS2811_LED_STRIP_LENGTH 128
 #define WS2811_BITS_PER_LED 24
-#define WS2811_DELAY_BUFFER_LENGTH 42 // for 50us delay 
+#define WS2811_DELAY_BUFFER_LENGTH 42 // for 50us delay
 
 #define WS2811_DATA_BUFFER_SIZE (WS2811_BITS_PER_LED * WS2811_LED_STRIP_LENGTH)
 
@@ -29,6 +29,12 @@
 
 #define WS2811_TIMER_HZ         2400000
 #define WS2811_CARRIER_HZ       800000
+
+#ifdef USE_LED_STRIP_2
+#define LED_STRIP_COUNT 2
+#else
+#define LED_STRIP_COUNT 1
+#endif
 
 typedef enum {
     LED_PIN_PWM_MODE_SHARED_LOW = 0,
@@ -39,6 +45,9 @@ typedef enum {
 
 typedef struct ledPinConfig_s {
     uint8_t led_pin_pwm_mode;  //led_pin_pwm_mode_e
+#ifdef USE_LED_STRIP_2
+    uint8_t led_strip_2_offset;
+#endif
 } ledPinConfig_t;
 
 PG_DECLARE(ledPinConfig_t, ledPinConfig);
@@ -64,3 +73,12 @@ void setStripColor(const hsvColor_t *color);
 void setStripColors(const hsvColor_t *colors);
 
 bool isWS2811LedStripReady(void);
+
+#ifdef USE_LED_STRIP_2
+void ws2811UpdateStripIdx(uint8_t stripIdx);
+bool isWS2811LedStripReadyIdx(uint8_t stripIdx);
+void setLedHsvIdx(uint8_t stripIdx, uint16_t index, const hsvColor_t *color);
+void getLedHsvIdx(uint8_t stripIdx, uint16_t index, hsvColor_t *color);
+void scaleLedValueIdx(uint8_t stripIdx, uint16_t index, const uint8_t scalePercent);
+void setLedValueIdx(uint8_t stripIdx, uint16_t index, const uint8_t value);
+#endif

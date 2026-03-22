@@ -990,6 +990,20 @@ void ledStripUpdate(timeUs_t currentTimeUs)
         (*layerTable[timId])(updateNow, timer);
     }
     ws2811UpdateStrip();
+
+#ifdef USE_LED_STRIP_2
+    {
+        const uint8_t offset = ledPinConfig()->led_strip_2_offset;
+        if (offset > 0 && offset < WS2811_LED_STRIP_LENGTH) {
+            for (uint16_t i = offset; i < WS2811_LED_STRIP_LENGTH; i++) {
+                hsvColor_t c;
+                getLedHsv(i, &c);
+                setLedHsvIdx(1, i - offset, &c);
+            }
+            ws2811UpdateStripIdx(1);
+        }
+    }
+#endif
 }
 
 bool parseColor(int index, const char *colorConfig)
@@ -1078,5 +1092,14 @@ static void ledStripDisable(void)
     setStripColor(&HSV(BLACK));
 
     ws2811UpdateStrip();
+#ifdef USE_LED_STRIP_2
+    {
+        const hsvColor_t black = HSV(BLACK);
+        for (uint16_t i = 0; i < WS2811_LED_STRIP_LENGTH; i++) {
+            setLedHsvIdx(1, i, &black);
+        }
+        ws2811UpdateStripIdx(1);
+    }
+#endif
 }
 #endif
